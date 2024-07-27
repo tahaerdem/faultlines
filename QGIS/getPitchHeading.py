@@ -1,84 +1,124 @@
-from qgis.core import QgsProject, QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsField
+from qgis.PyQt import QtWidgets, QtCore
+from qgis.core import QgsProject, QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY, QgsField, QgsLineSymbol, QgsArrowSymbolLayer
+from qgis.utils import iface
 from PyQt5.QtCore import QVariant
 from math import atan2, degrees
 
+class PitchHeadingCalculator(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
 
-def calculate_pitch_heading(layer_name):
-    layer = QgsProject.instance().mapLayersByName(layer_name)[0]
+    def initUI(self):
+        self.setWindowTitle('FaultLines - Get PH')
+        layout = QtWidgets.QVBoxLayout()
 
-    # Add new fields for pitch and heading
-    layer.dataProvider().addAttributes([QgsField("pitch", QVariant.Double), QgsField("heading", QVariant.Double)])
-    layer.updateFields()
+        # Layer selection
+        self.layer_combo = QtWidgets.QComboBox()
+        self.populateLayerCombo()
+        layout.addWidget(QtWidgets.QLabel('Select Layer:'))
+        layout.addWidget(self.layer_combo)
 
-    # Create a dictionary to store the pitch and heading values for each feature
-    pitch_heading_dict = {}
+        # Draw lines checkbox
+        self.draw_lines_checkbox = QtWidgets.QCheckBox('Draw Lines')
+        self.draw_lines_checkbox.setChecked(True)
+        layout.addWidget(self.draw_lines_checkbox)
 
-    for feature in layer.getFeatures():
-        latINTP = feature['latINTP']
-        lonINTP = feature['lonINTP']
-        latSVI = feature['latSVI']
-        lonSVI = feature['lonSVI']
-        panoId = feature['panoId']
+        # Process button
+        self.process_button = QtWidgets.QPushButton('Calculate Pitch and Heading')
+        self.process_button.clicked.connect(self.process)
+        layout.addWidget(self.process_button)
 
-        # Calculate the pitch and heading values
-        dx = lonINTP - lonSVI
-        dy = latINTP - latSVI
-        heading = degrees(atan2(dx, dy))
-        pitch = 0  # Assuming a flat surface, set pitch to 0
+        self.setLayout(layout)
 
-        # Store the pitch and heading values in the dictionary with panoId as the key
-        pitch_heading_dict[panoId] = (pitch, heading)
+    def populateLayerCombo(self):
+        self.layer_combo.clear()
+        for layer in QgsProject.instance().mapLayers().values():
+            if layer.type() == QgsVectorLayer.VectorLayer:
+                self.layer_combo.addItem(layer.name(), layer)
 
-    # Update the features with the calculated pitch and heading values
-    layer.startEditing()
-    for feature in layer.getFeatures():
-        panoId = feature['panoId']
-        if panoId in pitch_heading_dict:
-            pitch, heading = pitch_heading_dict[panoId]
-            feature.setAttribute(feature.fieldNameIndex('pitch'), pitch)
-            feature.setAttribute(feature.fieldNameIndex('heading'), heading)
-            layer.updateFeature(feature)
-    layer.commitChanges()
+    def process(self):
+        layer = self.layer_combo.currentData()
+        if not layer:
+            iface.messageBar().pushWarning("Error", "No layer selected")
+            return
 
+        self.calculate_pitch_heading(layer)
+        if self.draw_lines_checkbox.isChecked():
+            self.draw_lines(layer)
 
-def draw_lines(layer_name):
-    layer = QgsProject.instance().mapLayersByName(layer_name)[0]
+    def calculate_pitch_heading(self, layer):
+        if 'pitch' not in layer.fields().names():
+            layer.dataProvider().addAttributes([QgsField("pitch", QVariant.Double)])
+        if 'heading' not in layer.fields().names():
+            layer.dataProvider().addAttributes([QgsField("heading", QVariant.Double)])
+        layer.updateFields()
 
-    # Create a new memory layer for the lines
-    line_layer = QgsVectorLayer("LineString?crs=EPSG:4326", f"{layer_name}_Arrows", "memory")
+        pitch_heading_dict = {}
+        total_features = layer.featureCount()
+        for count, feature in enumerate(layer.getFeatures()):
+            latINTP = feature['latINTP']
+            lonINTP = feature['lonINTP']
+            latSVI = feature['latSVI']
+            lonSVI = feature['lonSVI']
+            panoId = feature['panoId']
+            dx = lonINTP - lonSVI
+            dy = latINTP - latSVI
+            heading = degrees(atan2(dx, dy))
+            pitch = 0  # Assuming a flat surface, set pitch to 0
+            pitch_heading_dict[panoId] = (pitch, heading)
+            
+            progress = int((count + 1) / total_features * 100)
+            iface.messageBar().pushInfo("Progress", f"Calculated {count + 1} of {total_features} features ({progress}%)")
 
-    # Add a new field for the panoId
-    line_layer.dataProvider().addAttributes([QgsField("panoId", QVariant.String)])
-    line_layer.updateFields()
+        layer.startEditing()
+        for feature in layer.getFeatures():
+            panoId = feature['panoId']
+            if panoId in pitch_heading_dict:
+                pitch, heading = pitch_heading_dict[panoId]
+                feature.setAttribute(feature.fieldNameIndex('pitch'), pitch)
+                feature.setAttribute(feature.fieldNameIndex('heading'), heading)
+                layer.updateFeature(feature)
+        layer.commitChanges()
+        
+        iface.messageBar().pushSuccess("Success", "Pitch and heading calculated successfully")
 
-    for feature in layer.getFeatures():
-        latINTP = feature['latINTP']
-        lonINTP = feature['lonINTP']
-        latSVI = feature['latSVI']
-        lonSVI = feature['lonSVI']
-        panoId = feature['panoId']
+    def draw_lines(self, layer):
+        line_layer = QgsVectorLayer("LineString?crs=EPSG:4326", f"{layer.name()}_Arrows", "memory")
+        line_layer.dataProvider().addAttributes([QgsField("panoId", QVariant.String)])
+        line_layer.updateFields()
 
-        # Create a new feature for the line
-        line_feature = QgsFeature()
-        line_feature.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(lonSVI, latSVI), QgsPointXY(lonINTP, latINTP)]))
-        line_feature.setAttributes([panoId])
-        line_layer.dataProvider().addFeature(line_feature)
+        total_features = layer.featureCount()
+        for count, feature in enumerate(layer.getFeatures()):
+            latINTP = feature['latINTP']
+            lonINTP = feature['lonINTP']
+            latSVI = feature['latSVI']
+            lonSVI = feature['lonSVI']
+            panoId = feature['panoId']
+            line_feature = QgsFeature()
+            line_feature.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(lonSVI, latSVI), QgsPointXY(lonINTP, latINTP)]))
+            line_feature.setAttributes([panoId])
+            line_layer.dataProvider().addFeature(line_feature)
+            
+            progress = int((count + 1) / total_features * 100)
+            iface.messageBar().pushInfo("Progress", f"Drew {count + 1} of {total_features} lines ({progress}%)")
 
-    # Create a line symbol with an arrow symbol layer
-    line_symbol = QgsLineSymbol()
-    arrow_symbol_layer = QgsArrowSymbolLayer()
-    arrow_symbol_layer.setArrowWidth(0.5)
-    arrow_symbol_layer.setArrowStartWidth(0.5)
-    arrow_symbol_layer.setHeadLength(1.5)
-    arrow_symbol_layer.setHeadThickness(1.5)
-    line_symbol.appendSymbolLayer(arrow_symbol_layer)
+        line_symbol = QgsLineSymbol()
+        arrow_symbol_layer = QgsArrowSymbolLayer()
+        arrow_symbol_layer.setArrowWidth(0.5)
+        arrow_symbol_layer.setArrowStartWidth(0.5)
+        arrow_symbol_layer.setHeadLength(1.5)
+        arrow_symbol_layer.setHeadThickness(1.5)
+        line_symbol.appendSymbolLayer(arrow_symbol_layer)
+        line_layer.renderer().setSymbol(line_symbol)
+        QgsProject.instance().addMapLayer(line_layer)
+        
+        iface.messageBar().pushSuccess("Success", "Arrow lines drawn successfully")
 
-    # Apply the line symbol to the line layer
-    line_layer.renderer().setSymbol(line_symbol)
+def run_pitch_heading_calculator():
+    dialog = PitchHeadingCalculator()
+    dialog.show()
+    return dialog
 
-    QgsProject.instance().addMapLayer(line_layer)
-
-
-layer_name = '40187_Intersection_SVI_2'
-calculate_pitch_heading(layer_name)
-draw_lines(layer_name)
+# Run the tool
+pitch_heading_dialog = run_pitch_heading_calculator()
